@@ -106,8 +106,13 @@ def assess(paper: dict) -> dict:
 
 def quality_assessment_node(state: dict) -> dict:
     """LangGraph node wrapper. Sequential for now -- parallel fan-out
-    comes later when we wire up the full graph."""
-    state.setdefault("errors", [])
+    comes later when we wire up the full graph.
+
+    Returns a partial state update, not the mutated whole state --
+    see agents/ingestion.py's ingestion_node docstring for why this
+    matters with LangGraph's Annotated/operator.add reducer fields.
+    """
+    new_errors = []
     scores = {}
 
     for paper in state.get("parsed_papers", []):
@@ -116,9 +121,11 @@ def quality_assessment_node(state: dict) -> dict:
         result = assess(paper)
 
         if result.get("fallback"):
-            state["errors"].append(f"Quality assessment failed for '{title}'")
+            new_errors.append(f"Quality assessment failed for '{title}'")
 
         scores[title] = result
 
-    state["quality_scores"] = scores
-    return state
+    return {
+        "quality_scores": scores,
+        "errors": new_errors,
+    }
