@@ -198,8 +198,13 @@ def synthesize(
 
 
 def synthesis_node(state: dict) -> dict:
-    """LangGraph node wrapper."""
-    state.setdefault("errors", [])
+    """LangGraph node wrapper.
+
+    Returns a partial state update, not the mutated whole state --
+    see agents/ingestion.py's ingestion_node docstring for why this
+    matters with LangGraph's Annotated/operator.add reducer fields.
+    """
+    new_errors = []
 
     result = synthesize(
         query=state.get("query", "research topic"),
@@ -208,12 +213,15 @@ def synthesis_node(state: dict) -> dict:
         contradictions=state.get("contradictions", []),
     )
 
-    state["final_report"] = result["report"]
     if result["excluded_papers"]:
-        state["errors"].append(
+        new_errors.append(
             f"{len(result['excluded_papers'])} paper(s) excluded from synthesis due to processing failures: "
             f"{', '.join(result['excluded_papers'])}"
         )
 
     logger.info("Synthesis complete.")
-    return state
+
+    return {
+        "final_report": result["report"],
+        "errors": new_errors,
+    }
