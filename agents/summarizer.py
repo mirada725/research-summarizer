@@ -6,6 +6,7 @@ methodology, findings, and limitations.
 
 """
 
+
 from loguru import logger
 from utils.llm_factory import get_llm
 from utils.json_extraction import extract_json, fallback_result
@@ -82,8 +83,13 @@ def summarize(paper: dict) -> dict:
 
 def summarization_node(state: dict) -> dict:
     """LangGraph node wrapper. Sequential for now -- parallel fan-out
-    comes later when we wire up the full graph."""
-    state.setdefault("errors", [])
+    comes later when we wire up the full graph.
+
+    Returns a partial state update, not the mutated whole state --
+    see agents/ingestion.py's ingestion_node docstring for why this
+    matters with LangGraph's Annotated/operator.add reducer fields.
+    """
+    new_errors = []
     summaries = {}
 
     for paper in state.get("parsed_papers", []):
@@ -92,9 +98,11 @@ def summarization_node(state: dict) -> dict:
         result = summarize(paper)
 
         if result.get("fallback"):
-            state["errors"].append(f"Summarization failed for '{title}'")
+            new_errors.append(f"Summarization failed for '{title}'")
 
         summaries[title] = result
 
-    state["summaries"] = summaries
-    return state
+    return {
+        "summaries": summaries,
+        "errors": new_errors,
+    }
