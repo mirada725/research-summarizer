@@ -209,12 +209,21 @@ def detect_contradictions(
 
 
 def contradiction_detector_node(state: dict) -> dict:
-    """LangGraph node wrapper."""
-    state.setdefault("errors", [])
+    """LangGraph node wrapper.
+
+    Returns a partial state update for consistency with the other
+    nodes, even though `contradictions` itself isn't a reducer field
+    in ResearchState (plain overwrite, not Annotated) -- not mutating
+    the incoming state dict is a good general practice regardless,
+    and keeps this node consistent with the others if the schema
+    changes later.
+    """
     summaries = state.get("summaries", {})
 
     contradictions = detect_contradictions(summaries)
-    state["contradictions"] = contradictions
 
     logger.info(f"Found {len(contradictions)} contradiction(s) among {len(summaries)} paper(s)")
-    return state
+
+    return {
+        "contradictions": contradictions,
+    }
