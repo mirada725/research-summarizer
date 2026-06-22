@@ -79,14 +79,27 @@ def route_after_parsing_for_fanout(state: ResearchState):
     return [Send("summarize_one", {"paper": paper}) for paper in state["parsed_papers"]]
 
 
-def fan_out_to_assessors(state: ResearchState) -> list[Send]:
-    """Same pattern as fan_out_to_summarizers, for quality assessment.
-    Runs after all summarize_one branches have completed (since this
-    is reached via a normal edge from a node, not from inside the
-    fan-out itself), reusing parsed_papers as the source list -- the
-    assessor reads from sections/abstract, not from the summary, so
-    it doesn't need to wait on summaries content, only on graph order.
+def post_summarize_node(state: ResearchState) -> dict:
+    """Convergence point after all summarize_one branches complete.
+
+    This node exists purely to solve a fan-out wiring problem: if we
+    hang fan_out_to_assessors directly on the summarize_one edge,
+    LangGraph fires it once PER COMPLETING summarize_one branch --
+    meaning 2 papers → 2 completions → fan_out_to_assessors fires
+    twice → 4 assess calls instead of 2. By routing all summarize_one
+    branches to THIS node first, LangGraph merges all branch results
+    into a single state here (via the merge_dicts reducer), and then
+    we fan out to assessors exactly once from this single convergence
+    point. No logic needed -- just a pass-through that gives LangGraph
+    a clean "all summarize branches are done" signal.
     """
+    return {}
+
+
+def fan_out_to_assessors(state: ResearchState) -> list[Send]:
+    """Fan out quality assessment after ALL summarize branches have
+    converged at post_summarize_node. Called once (not once per paper),
+    dispatching exactly len(parsed_papers) assess calls."""
     return [
         Send("assess_one", {"paper": paper})
         for paper in state["parsed_papers"]
@@ -99,6 +112,7 @@ def create_workflow():
     workflow.add_node("ingest", ingestion_node)
     workflow.add_node("parse", parser_node)
     workflow.add_node("summarize_one", summarize_one_paper_node)
+    workflow.add_node("post_summarize", post_summarize_node)
     workflow.add_node("assess_one", assess_one_paper_node)
     workflow.add_node("detect_contradictions", contradiction_detector_node)
     workflow.add_node("synthesize", synthesis_node)
@@ -112,29 +126,21 @@ def create_workflow():
         {"early_exit": "early_exit", "parse": "parse"},
     )
 
-    # After parsing, conditionally either early-exit or fan out to
-    # parallel summarization. add_conditional_edges' path map values
-    # can themselves be the fan-out function for the "summarize" case,
-    # letting LangGraph treat the Send list as the next step.
     workflow.add_conditional_edges(
         "parse",
-        lambda state: "early_exit" if not state.get("parsed_papers") else "fan_out_summarize",
-        {
-            "early_exit": "early_exit",
-            "fan_out_summarize": fan_out_to_summarizers,
-        },
+        route_after_parsing_for_fanout,
+        {"early_exit": "early_exit"},
     )
 
-    # All summarize_one branches converge here (LangGraph waits for
-    # every Send dispatched from the parse->fan_out_summarize edge to
-    # complete before this edge fires), then fan out again for quality
-    # assessment.
+    # All summarize_one branches converge at post_summarize before
+    # the assess fan-out fires -- this ensures assess fan-out happens
+    # exactly once regardless of how many papers were summarized.
+    workflow.add_edge("summarize_one", "post_summarize")
     workflow.add_conditional_edges(
-        "summarize_one",
+        "post_summarize",
         fan_out_to_assessors,
     )
 
-    # All assess_one branches converge before contradictions/synthesis.
     workflow.add_edge("assess_one", "detect_contradictions")
     workflow.add_edge("detect_contradictions", "synthesize")
     workflow.add_edge("synthesize", END)
