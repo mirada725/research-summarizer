@@ -17,6 +17,7 @@ papers.
 from loguru import logger
 from utils.llm_factory import get_llm
 from utils.json_extraction import extract_json, clamp_score, fallback_result
+from utils.concurrency import llm_semaphore
 
 QUALITY_ASSESSMENT_PROMPT = """You are a senior, critical peer reviewer for a top-tier AI conference (NeurIPS/ICML level). Your job is to find real weaknesses, not just praise the paper.
 
@@ -102,6 +103,26 @@ def assess(paper: dict) -> dict:
 
     logger.error(f"Could not parse quality JSON after retries for '{paper.get('title', '')[:50]}...'")
     return fallback_result("quality_justification", "LLM did not return valid JSON after 2 attempts", extra)
+
+
+def assess_one_paper_node(state:dict) -> dict:
+    """Per-paper node for parallel Send-based fan-out."""
+    paper = state["paper"]
+    title = paper["title"]
+    logger.info(f"[parallel] Assessing quality: {title[:60]}... (waiting for LLM slot)")
+    
+    with llm_semaphore:
+        logger.info(f"[parallel] Got LLM slot, assessing: {title[:60]}...")
+        result = assess(paper)
+
+    new_errors = []
+    if result.get("fallback"):
+        new_errors.append(f"Quality assessment failed for '{title}'")
+
+    return {
+        "quality_scores": {title: result},
+        "errors": new_errors,
+    }
 
 
 def quality_assessment_node(state: dict) -> dict:
