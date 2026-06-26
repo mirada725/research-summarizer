@@ -2136,7 +2136,6 @@ dependencies = [
     { name = "sentence-transformers" },
     { name = "streamlit" },
     { name = "tqdm" },
-    { name = "transformers" },
 ]
 
 [package.dev-dependencies]
@@ -2161,7 +2160,6 @@ requires-dist = [
     { name = "sentence-transformers", specifier = ">=2.7.0" },
     { name = "streamlit", specifier = ">=1.35.0" },
     { name = "tqdm", specifier = ">=4.66.0" },
-    { name = "transformers", specifier = ">=4.40.0" },
 ]
 
 [package.metadata.requires-dev]
