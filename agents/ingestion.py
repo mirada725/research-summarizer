@@ -63,7 +63,8 @@ def fetch_papers(query: str, max_results: int = 5) -> list[dict]:
 
     # arxiv.Client handles rate limiting internally (default
     # delay_seconds=3.0 between requests) for the metadata/search
-    
+    # calls, which the original plan mentioned but never actually
+    # implemented.
     client = arxiv.Client(
         page_size=max_results,
         delay_seconds=3.0,
@@ -123,21 +124,30 @@ def fetch_papers(query: str, max_results: int = 5) -> list[dict]:
 
 
 def ingestion_node(state: dict) -> dict:
-    """LangGraph node wrapper around fetch_papers."""
+    """LangGraph node wrapper around fetch_papers.
+
+    Returns a partial state update (not the mutated whole state) --
+    required because `errors` is an Annotated[list, operator.add]
+    reducer field in ResearchState. Mutating and returning the whole
+    incoming state object causes LangGraph to double/triple-count
+    items, since the reducer expects ONLY the new contribution from
+    this node, not the accumulated-so-far list with new items already
+    appended to it. See graph/state.py and graph/workflow.py for the
+    reducer definitions this must stay compatible with.
+    """
     papers, failed = fetch_papers(
         query=state.get("query", "machine learning"),
         max_results=state.get("num_papers", 5),
     )
 
-    state["papers"] = papers
-    state.setdefault("errors", [])
-    state["errors"].extend([f"Ingestion failed for '{f['title']}': {f['error']}" for f in failed])
-
+    new_errors = [f"Ingestion failed for '{f['title']}': {f['error']}" for f in failed]
     if not papers:
-        # Nothing downloaded successfully -- this is a hard stop
-        # condition the graph should handle explicitly later (Step on
-        # error routing), not something that should silently flow
-        # into an empty parse/summarize step.
-        state["errors"].append("No papers were successfully ingested.")
+        new_errors.append("No papers were successfully ingested.")
 
-    return state
+    if failed:
+        logger.warning(f"{len(failed)} paper(s) failed to download and were skipped.")
+
+    return {
+        "papers": papers,
+        "errors": new_errors,
+    }

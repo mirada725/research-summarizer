@@ -50,8 +50,11 @@ from loguru import logger
 # against detected headings (not against the whole document).
 SECTION_ALIASES = {
     "introduction": ["introduction"],
-    "methodology": ["method", "methods", "methodology", "approach", "model", "architecture", "approach and architecture", "proposed method", "system"],
-    "results": ["result", "results", "experiment", "experiments", "evaluation", "Qualitative Results"],
+    "methodology": [
+        "method", "methods", "methodology", "approach", "model",
+        "architecture", "proposed method", "system", "our approach",
+    ],
+    "results": ["result", "results", "experiment", "experiments", "evaluation"],
     "conclusion": ["conclusion", "conclusions", "discussion"],
 }
 
@@ -230,9 +233,14 @@ def extract_sections(pdf_path: str) -> tuple[dict, str, bool]:
 
 
 def parser_node(state: dict) -> dict:
-    """LangGraph node wrapper around extract_sections."""
+    """LangGraph node wrapper around extract_sections.
+
+    Returns a partial state update, not the mutated whole state --
+    see agents/ingestion.py's ingestion_node docstring for why this
+    matters with LangGraph's Annotated/operator.add reducer fields.
+    """
     parsed_papers = []
-    state.setdefault("errors", [])
+    new_errors = []
 
     for paper in state.get("papers", []):
         try:
@@ -244,7 +252,7 @@ def parser_node(state: dict) -> dict:
                 # passing empty content into the summarizer, which
                 # would just hallucinate a summary from nothing.
                 logger.warning(f"No text extracted from '{paper['title'][:60]}...' -- likely scanned/image PDF")
-                state["errors"].append(
+                new_errors.append(
                     f"Could not extract text from '{paper['title']}' (possibly a scanned PDF)"
                 )
                 continue
@@ -258,7 +266,9 @@ def parser_node(state: dict) -> dict:
 
         except Exception as e:
             logger.warning(f"Parsing failed for '{paper['title'][:60]}...': {e}")
-            state["errors"].append(f"Parsing failed for '{paper['title']}': {e}")
+            new_errors.append(f"Parsing failed for '{paper['title']}': {e}")
 
-    state["parsed_papers"] = parsed_papers
-    return state
+    return {
+        "parsed_papers": parsed_papers,
+        "errors": new_errors,
+    }

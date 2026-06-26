@@ -17,6 +17,7 @@ papers.
 from loguru import logger
 from utils.llm_factory import get_llm
 from utils.json_extraction import extract_json, clamp_score, fallback_result
+from utils.concurrency import llm_semaphore
 
 QUALITY_ASSESSMENT_PROMPT = """You are a senior, critical peer reviewer for a top-tier AI conference (NeurIPS/ICML level). Your job is to find real weaknesses, not just praise the paper.
 
@@ -104,10 +105,35 @@ def assess(paper: dict) -> dict:
     return fallback_result("quality_justification", "LLM did not return valid JSON after 2 attempts", extra)
 
 
+def assess_one_paper_node(state:dict) -> dict:
+    """Per-paper node for parallel Send-based fan-out."""
+    paper = state["paper"]
+    title = paper["title"]
+    logger.info(f"[parallel] Assessing quality: {title[:60]}... (waiting for LLM slot)")
+    
+    with llm_semaphore:
+        logger.info(f"[parallel] Got LLM slot, assessing: {title[:60]}...")
+        result = assess(paper)
+
+    new_errors = []
+    if result.get("fallback"):
+        new_errors.append(f"Quality assessment failed for '{title}'")
+
+    return {
+        "quality_scores": {title: result},
+        "errors": new_errors,
+    }
+
+
 def quality_assessment_node(state: dict) -> dict:
     """LangGraph node wrapper. Sequential for now -- parallel fan-out
-    comes later when we wire up the full graph."""
-    state.setdefault("errors", [])
+    comes later when we wire up the full graph.
+
+    Returns a partial state update, not the mutated whole state --
+    see agents/ingestion.py's ingestion_node docstring for why this
+    matters with LangGraph's Annotated/operator.add reducer fields.
+    """
+    new_errors = []
     scores = {}
 
     for paper in state.get("parsed_papers", []):
@@ -116,9 +142,11 @@ def quality_assessment_node(state: dict) -> dict:
         result = assess(paper)
 
         if result.get("fallback"):
-            state["errors"].append(f"Quality assessment failed for '{title}'")
+            new_errors.append(f"Quality assessment failed for '{title}'")
 
         scores[title] = result
 
-    state["quality_scores"] = scores
-    return state
+    return {
+        "quality_scores": scores,
+        "errors": new_errors,
+    }

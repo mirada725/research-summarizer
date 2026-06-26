@@ -6,9 +6,11 @@ methodology, findings, and limitations.
 
 """
 
+
 from loguru import logger
 from utils.llm_factory import get_llm
 from utils.json_extraction import extract_json, fallback_result
+from utils.concurrency import llm_semaphore
 
 SUMMARIZATION_PROMPT = """You are an expert research summarizer. Analyze this paper and create a structured summary.
 
@@ -80,10 +82,46 @@ def summarize(paper: dict) -> dict:
     return fallback_result("main_contribution", "LLM did not return valid JSON after 2 attempts", extra)
 
 
+def summarize_one_paper_node(state: dict) -> dict:
+    """Per-paper node for parallel Send-based fan-out.
+ 
+    Unlike summarization_node (which loops over all parsed_papers
+    sequentially), this is dispatched ONCE PER PAPER by LangGraph via
+    Send -- the state it receives is {"paper": <single paper dict>},
+    constructed in graph/workflow.py's fan_out_to_summarizers function.
+ 
+    Returns {"summaries": {title: result}} -- a single-key dict that
+    gets merged into the overall summaries dict via the merge_dicts
+    reducer in graph/state.py, regardless of how many other paper
+    branches are running concurrently.
+    """
+    paper = state["paper"]
+    title = paper["title"]
+    logger.info(f"[parallel] Summarizing: {title[:60]}... (waiting for LLM slot)")
+ 
+    with llm_semaphore:
+        logger.info(f"[parallel] Got LLM slot, summarizing: {title[:60]}...")
+        result = summarize(paper)
+ 
+    new_errors = []
+    if result.get("fallback"):
+        new_errors.append(f"Summarization failed for '{title}'")
+ 
+    return {
+        "summaries": {title: result},
+        "errors": new_errors,
+    }
+
+
 def summarization_node(state: dict) -> dict:
     """LangGraph node wrapper. Sequential for now -- parallel fan-out
-    comes later when we wire up the full graph."""
-    state.setdefault("errors", [])
+    comes later when we wire up the full graph.
+
+    Returns a partial state update, not the mutated whole state --
+    see agents/ingestion.py's ingestion_node docstring for why this
+    matters with LangGraph's Annotated/operator.add reducer fields.
+    """
+    new_errors = []
     summaries = {}
 
     for paper in state.get("parsed_papers", []):
@@ -92,9 +130,11 @@ def summarization_node(state: dict) -> dict:
         result = summarize(paper)
 
         if result.get("fallback"):
-            state["errors"].append(f"Summarization failed for '{title}'")
+            new_errors.append(f"Summarization failed for '{title}'")
 
         summaries[title] = result
 
-    state["summaries"] = summaries
-    return state
+    return {
+        "summaries": summaries,
+        "errors": new_errors,
+    }
