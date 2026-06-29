@@ -264,6 +264,6 @@ This project is licensed under the MIT License.
 
 ### ⭐ If you found this project useful, consider giving it a star!
 
-Made with ❤️ using Python, LangGraph and Local LLMs
+Made with ❤️ using Python and LangGraph <!--and Local LLMs -->
 
 </div>
