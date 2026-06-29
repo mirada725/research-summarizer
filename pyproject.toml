@@ -20,6 +20,10 @@ dependencies = [
     "tqdm>=4.66.0",
     "loguru>=0.7.2",
     "requests>=2.33.1",
+    "reportlab>=5.0.0",
+    "markdown>=3.10.2",
+    "weasyprint>=69.0",
+    "torchvision>=0.27.1",
 ]
 
 [dependency-groups]
