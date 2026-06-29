@@ -168,7 +168,7 @@ def main():
         st.divider()
         st.caption(
             f"**Mode:** {'Parallel' if use_parallel else 'Sequential'}  \n"
-            f"**Model:** llama3.1:8b (configurable in utils/model_config.py)"
+            f"**Model:** llama3.1:8b"
         )
         st.divider()
 
