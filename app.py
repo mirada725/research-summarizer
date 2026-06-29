@@ -3,9 +3,9 @@ Streamlit UI for the Agentic Research Paper Summarizer.
 
 """
 
-import json
 import streamlit as st
 from loguru import logger
+from utils.pdf_generator import markdown_to_pdf
 
 st.set_page_config(
     page_title="Research Paper Summarizer",
@@ -224,7 +224,15 @@ def main():
         if report:
             st.markdown(report)
             st.divider()
+            pdf = markdown_to_pdf(
+                markdown_text=report,
+                query=query,
+                num_papers=num_papers,
+                model="llama3.1:8b",
+                mode="Parallel" if use_parallel else "Sequential",
+            )
             col1, col2 = st.columns(2)
+
             with col1:
                 st.download_button(
                     "📥 Download as Markdown",
@@ -235,10 +243,10 @@ def main():
                 )
             with col2:
                 st.download_button(
-                    "📦 Download Raw Data (JSON)",
-                    data=json.dumps(result, indent=2, default=str),
-                    file_name="research_data.json",
-                    mime="application/json",
+                    "📄 Download as PDF",
+                    data = pdf,
+                    file_name="literature_review.pdf",
+                    mime="application/pdf",
                     use_container_width=True,
                 )
         else:

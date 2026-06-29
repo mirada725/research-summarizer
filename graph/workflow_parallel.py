@@ -64,15 +64,6 @@ def route_after_ingestion(state: ResearchState) -> str:
 
 def route_after_parsing_for_fanout(state: ResearchState):
     """Combined routing + fan-out function for the post-parse edge.
-
-    LangGraph's add_conditional_edges expects the routing function's
-    return value to be either: a plain string naming the next node
-    (looked up via path_map), OR a list of Send objects that carry
-    their own target node names directly -- the two cannot be mixed
-    in one path_map, since path_map values must be node-name strings,
-    not callables. So this single function handles both outcomes
-    itself: returns the early_exit string for the empty case, or a
-    list of Send objects to fan out to "summarize_one" otherwise.
     """
     if not state.get("parsed_papers"):
         return "early_exit"
