@@ -1,54 +1,19 @@
-"""
-Agent 5: Contradiction Detector.
-
-Compares paper summaries pairwise to flag potential contradictions:
-1. Embed each summary with a sentence-transformer
-2. Compute pairwise cosine similarity
-3. For pairs ABOVE a similarity floor (i.e. same general topic), ask
-   the LLM to verify whether they actually contradict
-
-IMPORTANT -- THIS LOGIC IS INVERTED FROM THE ORIGINAL PLAN, BASED ON
-REAL MEASUREMENT, NOT GUESSWORK:
-
-The original plan assumed "low similarity = potential contradiction"
-and used a `similarity < 0.4` cutoff. We tested this empirically
-(utils/calibrate_similarity_threshold.py) against realistic summary
-pairs and found the opposite:
-
-    same_topic_agreeing       -> 0.763
-    same_topic_contradicting  -> 0.890   <- HIGHER than agreeing!
-    unrelated_topics          -> 0.016
-
-A genuine contradiction (e.g. "removing NSP improves performance" vs
-"removing NSP degrades performance") uses nearly identical vocabulary
-to state the opposite claim, so it embeds as HIGHLY similar -- often
-more similar than two papers that loosely agree but use different
-terminology. This means cosine similarity cannot distinguish
-agreement from contradiction; it can only reliably tell you whether
-two papers are about the same narrow topic at all (the unrelated case
-dropped to 0.016, a clean, unambiguous signal).
-
-Given that, the embedding step here is repurposed as what it's
-actually good for: a cheap pre-filter that skips LLM verification for
-pairs that are CLEARLY unrelated topics (saving real time/Ollama load
-on an 8GB laptop), while sending every same-topic-or-better pair to
-the LLM, since that's where real contradictions actually hide. This
-is a low floor, not a tight threshold -- the point is to skip only
-the obviously-irrelevant pairs, not to pre-judge agreement.
-
-If you re-run calibrate_similarity_threshold.py against your own
-real paper data and see different patterns, adjust
-SIMILARITY_FLOOR accordingly -- don't assume the numbers above
-generalize perfectly to every paper domain.
-
-Other fixes applied vs. the original plan:
-- Guards against n<2 papers (can't detect contradictions with one
-  paper -- original plan doesn't check this and would silently do
-  nothing useful or error on an empty pair list).
-- Reuses the shared, robust JSON extraction from
-  utils/json_extraction.py instead of trusting raw LLM output shape.
-- The sentence-transformer model is loaded once per node call, not
-  once per pair comparison.
+"""Agent 5: Contradiction Detector.
+ 
+Flags contradictions across paper summaries:
+    1. Embed summary claims and compute pairwise cosine similarity.
+    2. Skip pairs below SIMILARITY_FLOOR (clearly unrelated topics).
+    3. Send same-topic pairs to the LLM for contradiction verification.
+ 
+Similarity is a topic-relevance prefilter only, not a contradiction
+score -- same-topic pairs can be highly similar whether they agree or
+contradict, so the LLM makes the final call. Tune SIMILARITY_FLOOR with
+calibrate_similarity_threshold.py for your domain.
+ 
+Attributes:
+    SIMILARITY_FLOOR (float): Min similarity before a pair goes to the LLM.
+    EMBEDDING_MODEL_NAME (str): sentence-transformers model used for embedding.
+    CONTRADICTION_VERIFICATION_PROMPT (str): LLM prompt template.
 """
 
 from itertools import combinations
@@ -147,13 +112,18 @@ def detect_contradictions(
     similarity_floor: float = SIMILARITY_FLOOR,
 ) -> list[dict]:
     """Compare all paper summary pairs and return flagged contradictions.
-
-    summaries: {title: summary_dict} as produced by agents/summarizer.py
-
-    Pairs below similarity_floor are skipped as clearly-unrelated
-    topics. Everything else is sent to the LLM for verification,
-    since embedding similarity cannot distinguish agreement from
-    contradiction among same-topic papers (see module docstring).
+ 
+    Pairs below similarity_floor are skipped as unrelated; the rest go
+    to the LLM for verification (see module docstring).
+ 
+    Args:
+        summaries: Mapping of {title: summary_dict}.
+        similarity_floor: Min similarity before a pair goes to the LLM.
+            Defaults to SIMILARITY_FLOOR.
+ 
+    Returns:
+        List of dicts, one per contradiction, with keys: paper1, paper2,
+        similarity, conflict_type, severity, explanation.
     """
     titles = list(summaries.keys())
 
@@ -209,14 +179,16 @@ def detect_contradictions(
 
 
 def contradiction_detector_node(state: dict) -> dict:
-    """LangGraph node wrapper.
-
-    Returns a partial state update for consistency with the other
-    nodes, even though `contradictions` itself isn't a reducer field
-    in ResearchState (plain overwrite, not Annotated) -- not mutating
-    the incoming state dict is a good general practice regardless,
-    and keeps this node consistent with the others if the schema
-    changes later.
+    """LangGraph node wrapper around detect_contradictions.
+ 
+    Returns a partial state update without mutating the input state,
+    for consistency with the other nodes.
+ 
+    Args:
+        state: Graph state; must contain "summaries" (defaults to {}).
+ 
+    Returns:
+        Partial state update: {"contradictions": [...]}.
     """
     summaries = state.get("summaries", {})
 
