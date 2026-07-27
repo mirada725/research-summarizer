@@ -1,27 +1,27 @@
 """
-Agent 1: Ingestion Agent.
+Ingestion Agent (Agent 1).
 
-Fetches papers from arXiv and downloads their PDFs.
+Searches arXiv for papers matching a query and downloads their PDFs
+to a local cache, handling per-paper failures gracefully so one bad
+download does not block the rest of the batch.
 
-Fixes applied vs. the original plan:
-- Uses arxiv.Client().results(search) instead of the deprecated
-  search.results() method (removed in arxiv>=2.x).
-- IMPORTANT: arxiv>=4.0.0 removed Result.download_pdf() entirely --
-  the library is now metadata/search-only. We fetch the actual PDF
-  bytes ourselves via `requests` using result.pdf_url. This was
-  discovered by testing against the real installed version (4.0.0),
-  not assumed from older docs -- worth remembering that this library
-  has changed its API surface significantly across majors, so if you
-  ever bump arxiv's version again, re-verify this against a real run
-  rather than trusting cached knowledge of the API.
-- Respects arXiv's rate-limit guidance (3 seconds between requests)
-  via the Client's own delay_seconds for search/metadata calls, AND
-  a manual delay before each PDF download too, since downloads hit
-  arxiv.org directly (a separate rate-limit surface from the API).
-- Wraps each paper's download in a try/except so one bad PDF
-  (network blip, malformed file, 404) doesn't kill the whole batch --
-  it's recorded as a failure and the rest continue.
-- Skips re-downloading PDFs that are already cached on disk.
+Key implementation notes
+-------------------------
+- Uses `arxiv.Client().results(search)` instead of the deprecated
+  `search.results()` method (removed in arxiv>=2.x).
+- `arxiv>=4.0.0` removed `Result.download_pdf()`; the library is now
+  metadata/search-only. PDF bytes are fetched manually via `requests`
+  using `result.pdf_url`. Confirmed against the installed version
+  (4.0.0) directly rather than assumed from documentation -- re-verify
+  against a real run if this dependency is ever upgraded again.
+- Rate limits are respected on two separate surfaces: the arXiv API
+  (handled internally by `arxiv.Client`'s `delay_seconds`) and direct
+  PDF downloads from arxiv.org (handled manually via `time.sleep`),
+  since these are distinct endpoints with independent rate limits.
+- Each paper's download is wrapped in a try/except so a single failure
+  (network error, malformed file, 404) is recorded and skipped rather
+  than aborting the whole batch.
+- PDFs already present in the cache are not re-downloaded.
 """
 
 import time
@@ -36,11 +36,26 @@ REQUEST_TIMEOUT_SECONDS = 30
 
 
 def _download_pdf(pdf_url: str, dest_path: Path) -> None:
-    """Download a PDF from arXiv directly via HTTP.
+    """
+    Download a PDF from arXiv via direct HTTP request.
 
-    Needed because arxiv>=4.0.0 dropped Result.download_pdf() --
-    the package is metadata-only now and expects callers to fetch
-    the file themselves.
+    Required because `arxiv>=4.0.0` no longer provides
+    `Result.download_pdf()`; the package is metadata-only and expects
+    callers to fetch the file themselves.
+
+    Parameters
+    ----------
+    pdf_url : str
+        Direct URL to the PDF, as provided by an arXiv search result.
+    dest_path : Path
+        Local filesystem path to write the downloaded PDF to.
+
+    Raises
+    ------
+    requests.HTTPError
+        If the HTTP request fails or returns an error status.
+    ValueError
+        If the response does not appear to be a valid PDF.
     """
     response = requests.get(pdf_url, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
@@ -52,12 +67,26 @@ def _download_pdf(pdf_url: str, dest_path: Path) -> None:
     dest_path.write_bytes(response.content)
 
 
-def fetch_papers(query: str, max_results: int = 5) -> list[dict]:
-    """Search arXiv and download PDFs for the top results.
+def fetch_papers(query: str, max_results: int = 5) -> tuple[list[dict], list[dict]]:
+    """
+    Search arXiv and download PDFs for the top matching results.
 
-    Returns a list of paper dicts. Papers that fail to download are
-    excluded from the returned list but logged, so the rest of the
-    pipeline isn't blocked by one bad paper.
+    Parameters
+    ----------
+    query : str
+        arXiv search query string.
+    max_results : int, optional
+        Maximum number of results to fetch, by default 5.
+
+    Returns
+    -------
+    tuple[list[dict], list[dict]]
+        A tuple of `(papers, failed)`:
+        - `papers`: successfully ingested papers, each represented as
+          a dict with title, authors, abstract, pdf_path, published
+          date, and arxiv_id.
+        - `failed`: papers that could not be downloaded, each
+          represented as a dict with title, arxiv_id, and error.
     """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -124,16 +153,28 @@ def fetch_papers(query: str, max_results: int = 5) -> list[dict]:
 
 
 def ingestion_node(state: dict) -> dict:
-    """LangGraph node wrapper around fetch_papers.
+    """
+    LangGraph node wrapper around `fetch_papers`.
 
-    Returns a partial state update (not the mutated whole state) --
-    required because `errors` is an Annotated[list, operator.add]
-    reducer field in ResearchState. Mutating and returning the whole
-    incoming state object causes LangGraph to double/triple-count
-    items, since the reducer expects ONLY the new contribution from
-    this node, not the accumulated-so-far list with new items already
-    appended to it. See graph/state.py and graph/workflow.py for the
-    reducer definitions this must stay compatible with.
+    Parameters
+    ----------
+    state : dict
+        Current graph state. Reads `query` and `num_papers`.
+
+    Returns
+    -------
+    dict
+        Partial state update containing only this node's new
+        contributions: `papers` and `errors`.
+
+    Important
+    ---------
+    Must return a partial dict, not the full mutated state. `errors`
+    is an `Annotated[list, operator.add]` reducer field in
+    `ResearchState`; returning the full accumulated list (rather than
+    only this node's new items) causes LangGraph to double/triple-count
+    entries. Keep this consistent with the reducer definitions in
+    `graph/state.py` and `graph/workflow.py`.
     """
     papers, failed = fetch_papers(
         query=state.get("query", "machine learning"),
