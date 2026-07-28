@@ -52,8 +52,9 @@ def _download_pdf(pdf_url: str, dest_path: Path) -> None:
 
     Raises
     ------
-    requests.HTTPError
-        If the HTTP request fails or returns an error status.
+    requests.exceptions.RequestException
+        If the HTTP request fails (for example, connection or timeout
+        errors) or returns an error status.
     ValueError
         If the response does not appear to be a valid PDF.
     """
