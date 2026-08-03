@@ -1,16 +1,21 @@
 """
 Agent 4: Quality Assessment Agent.
 
-Evaluates paper quality (novelty, rigor, clarity, impact) as a
-simulated peer reviewer would. Kept separate from the Summarization
-Agent -- see agents/summarizer.py docstring for the reasoning on why
-these were split back apart after an earlier attempt to merge them.
+Evaluates each parsed paper along four dimensions - novelty, rigor,
+clarity, and impact - using an LLM prompted to act as a critical
+peer reviewer, grounding scores in the paper's abstract and extracted
+methodology section rather than defaulting to generic praise.
 
-The prompt here is deliberately framed as critical peer review (not
-"explain what's good about this paper"), since a summarization-style
-prompt tends to pull the model toward a descriptive, charitable tone
-that produces inflated scores with little differentiation between
-papers.
+Supports two execution modes:
+    - `quality_assessment_node`: sequential assessment of all parsed
+      papers in a single node call.
+    - `assess_one_paper_node`: per-paper node intended for parallel
+      fan-out execution, gated by a shared LLM concurrency semaphore.
+
+Shared JSON parsing/validation utilities (`extract_json`, `clamp_score`,
+`fallback_result`) live in `utils/json_extraction.py` and are also used
+by the Summarizer agent, keeping validation logic consistent across
+both LLM-backed agents.
 
 """
 
@@ -54,6 +59,26 @@ Respond with ONLY the JSON object."""
 
 
 def _validate_quality(parsed: dict) -> dict:
+    """
+    Validate and normalize a raw parsed quality-assessment response.
+
+    Clamps each score to a valid range, computes an overall average,
+    and ensures list/string fields default to safe empty values if
+    missing from the LLM's response.
+
+    Parameters
+    ----------
+    parsed : dict
+        Raw dict parsed from the LLM's JSON output.
+
+    Returns
+    -------
+    dict
+        Validated result containing `novelty`, `rigor`, `clarity`,
+        `impact`, `overall` (average of the four, rounded to 1
+        decimal), `quality_justification`, `strengths`, and
+        `weaknesses`.
+    """
     novelty = clamp_score(parsed.get("novelty"))
     rigor = clamp_score(parsed.get("rigor"))
     clarity = clamp_score(parsed.get("clarity"))
@@ -72,7 +97,29 @@ def _validate_quality(parsed: dict) -> dict:
 
 
 def assess(paper: dict) -> dict:
-    """Run quality assessment for one paper."""
+    """
+    Run quality assessment for a single paper via the LLM.
+
+    Builds a grounded prompt from the paper's title, abstract, and
+    extracted methodology section, then invokes the LLM and validates
+    its JSON response. Retries once with a stricter formatting
+    reminder if the first response fails to parse.
+
+    Parameters
+    ----------
+    paper : dict
+        Parsed paper dict, expected to contain `title`, `abstract`,
+        and a `sections` dict (used to source `methodology`).
+
+    Returns
+    -------
+    dict
+        Validated quality assessment result from `_validate_quality`,
+        or a fallback result (with a `fallback` flag) if the LLM call
+        fails or its output cannot be parsed as valid JSON after
+        retrying.
+    """
+
     llm = get_llm("quality_assessor")
     sections = paper.get("sections", {})
 
@@ -106,7 +153,26 @@ def assess(paper: dict) -> dict:
 
 
 def assess_one_paper_node(state:dict) -> dict:
-    """Per-paper node for parallel Send-based fan-out."""
+    """
+    LangGraph node: assess a single paper, for parallel fan-out execution.
+
+    Intended to be invoked once per paper when the graph is running
+    in parallel mode. Acquires `llm_semaphore` before calling the LLM
+    to respect the configured `MAX_CONCURRENT_LLM_CALLS` limit.
+
+    Parameters
+    ----------
+    state : dict
+        Node-scoped state. Reads `paper`, a single parsed paper dict.
+
+    Returns
+    -------
+    dict
+        Partial state update:
+        - `quality_scores` (dict): `{title: result}` for this paper.
+        - `errors` (list[str]): populated if assessment fell back
+          due to an LLM or parsing failure.
+    """
     paper = state["paper"]
     title = paper["title"]
     logger.info(f"[parallel] Assessing quality: {title[:60]}... (waiting for LLM slot)")
@@ -126,12 +192,27 @@ def assess_one_paper_node(state:dict) -> dict:
 
 
 def quality_assessment_node(state: dict) -> dict:
-    """LangGraph node wrapper. Sequential for now -- parallel fan-out
-    comes later when we wire up the full graph.
+    """
+    LangGraph node: assess all parsed papers sequentially.
 
-    Returns a partial state update, not the mutated whole state --
-    see agents/ingestion.py's ingestion_node docstring for why this
-    matters with LangGraph's Annotated/operator.add reducer fields.
+    Iterates over every paper in `state["parsed_papers"]`, running
+    quality assessment one at a time. Used for the sequential workflow
+    variant, as opposed to `assess_one_paper_node`'s parallel fan-out.
+
+    Parameters
+    ----------
+    state : dict
+        Current graph state. Reads `parsed_papers`, a list of parsed
+        paper dicts.
+
+    Returns
+    -------
+    dict
+        Partial state update:
+        - `quality_scores` (dict): `{title: result}` for every
+          assessed paper.
+        - `errors` (list[str]): one entry per paper whose assessment
+          fell back due to an LLM or parsing failure.
     """
     new_errors = []
     scores = {}
