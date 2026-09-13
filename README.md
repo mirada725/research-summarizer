@@ -51,7 +51,7 @@ The application is designed to run locally with configurable Large Language Mode
 - ⚖️ Cross-paper contradiction detection
 - 📚 Literature review synthesis
 - ⚡ Sequential and parallel execution
-- 💾 Markdown & JSON export
+- 💾 Markdown & PDF export
 - 🔒 Local-first architecture using configurable LLMs
 
 ---
@@ -83,7 +83,7 @@ The application is designed to run locally with configurable Large Language Mode
       📚 Literature Review Agent
                           │
                           ▼
-        📦 Markdown & JSON Reports
+        📦 Markdown & PDF Reports
 ```
 
 ---
@@ -212,7 +212,7 @@ The application generates
 - Contradiction reports
 - Literature review
 - Markdown export
-- JSON export
+- PDF export
 
 Generated reports are stored inside
 
